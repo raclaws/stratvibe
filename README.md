@@ -54,7 +54,7 @@ Like `git init`, but for substrate pipelines.
 ### What gets created
 ```
 your-project/
-├── meta/                      # Core substrate documents
+├── .substrate/                 # Core substrate documents
 │   ├── taxonomy.md           # Layer definitions, invariant rules
 │   ├── schema.json           # Handoff protocol, layer schemas
 │   ├── agent-roles.md        # Role responsibilities, cannot rules
@@ -80,7 +80,7 @@ your-project/
 ## 📚 Core Concepts
 
 ### Handoff Protocol
-Every agent interaction is a **handoff** — a JSON object that validates against `meta/schema.json`.  
+Every agent interaction is a **handoff** — a JSON object that validates against `.substrate/schema.json`.  
 Handoffs flow through layers via **summarizer** compression.
 
 ### Agent Roles

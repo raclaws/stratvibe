@@ -5,4 +5,4 @@
  * KISS: Just pass through to main module
  */
 
-require('../src/cli.js');
+require('../src/cli.js').main();
