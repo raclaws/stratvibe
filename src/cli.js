@@ -371,7 +371,24 @@ Note: Do not include Substrate protocol rules like handoffs or token limits. The
 4. **Sprint Status**: What tasks are active blocked or done
 
 ## Output
-Output only the AGENTS.md markdown content No conversational filler`
+Output only the AGENTS.md markdown content No conversational filler`,
+
+  '.substrate/sprint-log.md': `# Sprint Log v0.1
+
+## Invariants
+- Append-only, never edit existing rows
+- Timestamp is ISO8601 UTC
+- Event must be from valid enum
+- Role must match agent-roles.md
+- One row per event, no batching
+
+## Events
+chain_start | role_complete | summarize | gate_pass | gate_fail | human_intervention | sprint_complete | error
+
+## Log
+
+| timestamp | event | role | detail |
+|-----------|-------|------|--------|`
 };
 
 // Layer directories with their invariants (from taxonomy)
@@ -455,6 +472,18 @@ function initCommand() {
     });
   });
 
+  // Scaffold sprint-log.md into sprint directories
+  ['sprint1', 'sprint2'].forEach(sprint => {
+    const sprintDir = path.join(process.cwd(), 'tasks', sprint);
+    ensureDir(sprintDir);
+    const sprintLogPath = path.join(sprintDir, 'sprint-log.md');
+    const sprintLogContent = TEMPLATES['.substrate/sprint-log.md'];
+    if (writeIfNotExists(sprintLogPath, sprintLogContent)) {
+      console.log(`${colors.green}✓${colors.reset} Written tasks/${sprint}/sprint-log.md`);
+      createdCount++;
+    }
+  });
+
   // Summary
   console.log(`\n${colors.green}Substrate v0.1 ready.${colors.reset}`);
     // Copy plan.template.md -> plan.md
@@ -466,7 +495,7 @@ function initCommand() {
       fs.copyFileSync(planSrc, planDest);
     } else {
       // Fallback: write minimal plan inline
-      fs.writeFileSync(planDest, '# [Project Name] — Technical Plan' + NL + NL);
+      fs.writeFileSync(planDest, '# [Project Name] — Technical Plan\n\n');
     }
     console.log(`${colors.green}✓${colors.reset} Written plan.md`);
     createdCount++;
@@ -804,6 +833,350 @@ function performEject() {
   }
 }
 
+/**
+ * Scan sprint task files for status
+ */
+function scanSprints() {
+  const tasksDir = path.join(process.cwd(), 'tasks');
+  if (!fs.existsSync(tasksDir)) return [];
+
+  const sprints = [];
+  const entries = fs.readdirSync(tasksDir);
+
+  entries.forEach(entry => {
+    if (!entry.startsWith('sprint')) return;
+    const sprintPath = path.join(tasksDir, entry);
+    if (!fs.statSync(sprintPath).isDirectory()) return;
+
+    const tasks = [];
+    const files = fs.readdirSync(sprintPath);
+
+    files.forEach(file => {
+      if (!file.endsWith('.md') || file === 'sprint-log.md' || file === 'sprint-sequence.md') return;
+      const taskPath = path.join(sprintPath, file);
+      const content = fs.readFileSync(taskPath, 'utf8');
+
+      const titleMatch = content.match(/^#\s+Task\s+\d+:\s*(.+)$/m);
+      const effortMatch = content.match(/^##\s+Effort\s*\n\s*(.+)$/m);
+      const blockedByMatch = content.match(/^##\s+Blocked\s+By\s*\n\s*-\s*(.+)$/m);
+
+      const checkboxes = content.match(/\[[ x]\]/g) || [];
+      const checked = checkboxes.filter(c => c === '[x]').length;
+      const total = checkboxes.length;
+      let status = 'pending';
+      if (total > 0 && checked === total) status = 'done';
+      else if (checked > 0) status = 'active';
+
+      if (blockedByMatch && blockedByMatch[1].toLowerCase() !== 'none') {
+        status = 'blocked';
+      }
+
+      tasks.push({
+        file,
+        title: titleMatch ? titleMatch[1].trim() : file.replace('.md', ''),
+        effort: effortMatch ? effortMatch[1].trim() : 'unknown',
+        status,
+        checked,
+        total
+      });
+    });
+
+    if (tasks.length > 0) {
+      const done = tasks.filter(t => t.status === 'done').length;
+      sprints.push({ name: entry, tasks, done, total: tasks.length });
+    }
+  });
+
+  return sprints;
+}
+
+/**
+ * Scan handoff JSON files for health status
+ */
+function scanHandoffs() {
+  const handoffs = [];
+  const substrateDir = path.join(process.cwd(), '.substrate');
+  const handoffDir = path.join(substrateDir, 'handoffs');
+
+  const scanDir = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    fs.readdirSync(dir).forEach(file => {
+      const fullPath = path.join(dir, file);
+      const stat = fs.statSync(fullPath);
+      if (stat.isDirectory()) {
+        scanDir(fullPath);
+      } else if (file.endsWith('.json') && file.startsWith('handoff')) {
+        try {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          const json = JSON.parse(content);
+          const reasoning = json.reasoning || {};
+          const handoff = json.handoff || {};
+          const context = json.context || {};
+
+          const flags = reasoning.flags || [];
+          const confidence = reasoning.confidence;
+          let status = handoff.status || 'unknown';
+          let humanTrigger = false;
+          let triggerReasons = [];
+
+          if (confidence !== undefined && confidence < 0.7) {
+            humanTrigger = true;
+            triggerReasons.push(`conf:${confidence.toFixed(2)}`);
+          }
+          if (flags.includes('breaking_change')) {
+            humanTrigger = true;
+            triggerReasons.push('breaking_change');
+          }
+          if (flags.includes('needs_review')) {
+            triggerReasons.push('needs_review');
+          }
+          if (context.token_used > context.token_budget) {
+            humanTrigger = true;
+            triggerReasons.push('budget_overflow');
+          }
+
+          handoffs.push({
+            file,
+            role: handoff.agent_role || 'unknown',
+            status,
+            confidence,
+            layerOrigin: handoff.layer_origin,
+            layerTarget: handoff.layer_target,
+            flags,
+            humanTrigger,
+            triggerReasons
+          });
+        } catch (e) {
+          handoffs.push({ file, role: 'error', status: 'failed', error: e.message });
+        }
+      }
+    });
+  };
+
+  if (fs.existsSync(handoffDir)) scanDir(handoffDir);
+  if (fs.existsSync(substrateDir)) {
+    fs.readdirSync(substrateDir).forEach(file => {
+      if (file.endsWith('.json') && file.startsWith('handoff')) {
+        const fullPath = path.join(substrateDir, file);
+        if (!handoffs.find(h => h.file === file)) {
+          try {
+            const content = fs.readFileSync(fullPath, 'utf8');
+            const json = JSON.parse(content);
+            const reasoning = json.reasoning || {};
+            const handoff = json.handoff || {};
+            const context = json.context || {};
+            const flags = reasoning.flags || [];
+            const confidence = reasoning.confidence;
+            let humanTrigger = false;
+            let triggerReasons = [];
+            if (confidence !== undefined && confidence < 0.7) { humanTrigger = true; triggerReasons.push(`conf:${confidence.toFixed(2)}`); }
+            if (flags.includes('breaking_change')) { humanTrigger = true; triggerReasons.push('breaking_change'); }
+            handoffs.push({ file, role: handoff.agent_role || 'unknown', status: handoff.status || 'unknown', confidence, flags, humanTrigger, triggerReasons });
+          } catch (e) {
+            handoffs.push({ file, role: 'error', status: 'failed', error: e.message });
+          }
+        }
+      }
+    });
+  }
+
+  return handoffs;
+}
+
+/**
+ * Scan sprint logs for recent events
+ */
+function scanSprintLogs() {
+  const tasksDir = path.join(process.cwd(), 'tasks');
+  if (!fs.existsSync(tasksDir)) return [];
+
+  const logs = [];
+  const entries = fs.readdirSync(tasksDir);
+
+  entries.forEach(entry => {
+    if (!entry.startsWith('sprint')) return;
+    const logPath = path.join(tasksDir, entry, 'sprint-log.md');
+    if (!fs.existsSync(logPath)) return;
+
+    const content = fs.readFileSync(logPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    let inTable = false;
+
+    lines.forEach(line => {
+      if (line.startsWith('| timestamp')) { inTable = true; return; }
+      if (inTable && line.startsWith('|---')) return;
+      if (inTable && line.startsWith('|') && line.trim().length > 10) {
+        const cells = line.split('|').map(c => c.trim()).filter(c => c.length > 0);
+        if (cells.length >= 4) {
+          logs.push({
+            sprint: entry,
+            timestamp: cells[0],
+            event: cells[1],
+            role: cells[2],
+            detail: cells[3]
+          });
+        }
+      }
+    });
+  });
+
+  return logs;
+}
+
+/**
+ * Render the ASCII dashboard
+ */
+function renderDashboard(sprints, handoffs, sprintLogs) {
+  const W = 50;
+  const border = '─'.repeat(W);
+  const lines = [];
+
+  lines.push(`${colors.blue}┌─ Stratvibe Dashboard${' '.repeat(W - 22)}┐${colors.reset}`);
+
+  // Sprint sections
+  sprints.forEach(sprint => {
+    lines.push(`${colors.blue}├─ ${sprint.name}${' '.repeat(W - 2 - sprint.name.length)}┤${colors.reset}`);
+    sprint.tasks.forEach(task => {
+      const icon = task.status === 'done' ? `${colors.green}✓${colors.reset}` :
+                   task.status === 'active' ? `${colors.yellow}⧗${colors.reset}` :
+                   task.status === 'blocked' ? `${colors.red}◌${colors.reset}` :
+                   `${colors.gray}○${colors.reset}`;
+      const title = task.title.length > 20 ? task.title.slice(0, 19) + '…' : task.title;
+      const statusColor = task.status === 'done' ? colors.green :
+                          task.status === 'blocked' ? colors.red :
+                          task.status === 'active' ? colors.yellow : colors.gray;
+      const statusStr = statusColor + task.status.padEnd(8) + colors.reset;
+      const effort = task.effort.padStart(6);
+      const pad = W - 2 - 2 - title.length - 8 - 6;
+      lines.push(`${colors.blue}│${colors.reset} ${icon} ${title}${' '.repeat(Math.max(0, pad))}${statusStr}${effort} ${colors.blue}│${colors.reset}`);
+    });
+    const summary = `${sprint.done}/${sprint.total} complete`;
+    const pad = W - 2 - summary.length;
+    lines.push(`${colors.blue}│${colors.reset} ${colors.gray}${summary}${' '.repeat(Math.max(0, pad))}${colors.reset} ${colors.blue}│${colors.reset}`);
+  });
+
+  if (sprints.length === 0) {
+    lines.push(`${colors.blue}├─ No sprints found${' '.repeat(W - 20)}┤${colors.reset}`);
+  }
+
+  // Handoff Health
+  lines.push(`${colors.blue}├─ Handoff Health${' '.repeat(W - 18)}┤${colors.reset}`);
+  if (handoffs.length > 0) {
+    handoffs.forEach(h => {
+      const icon = h.status === 'done' ? `${colors.green}✓${colors.reset}` :
+                   h.status === 'failed' ? `${colors.red}✗${colors.reset}` :
+                   h.status === 'pending' ? `${colors.gray}○${colors.reset}` :
+                   `${colors.yellow}⧗${colors.reset}`;
+      const role = (h.role || 'unknown').padEnd(12);
+      const conf = h.confidence !== undefined ? `conf:${h.confidence.toFixed(2)}` : 'no conf';
+      const confColor = h.confidence !== undefined && h.confidence < 0.7 ? colors.red : colors.gray;
+      const pad = W - 2 - 2 - 12 - conf.length - 1;
+      lines.push(`${colors.blue}│${colors.reset} ${icon} ${colors.gray}${role}${colors.reset}${confColor}${conf}${' '.repeat(Math.max(0, pad))}${colors.reset} ${colors.blue}│${colors.reset}`);
+    });
+  } else {
+    const pad = W - 2 - 16;
+    lines.push(`${colors.blue}│${colors.reset} ${colors.gray}No handoffs yet${' '.repeat(Math.max(0, pad))}${colors.reset} ${colors.blue}│${colors.reset}`);
+  }
+
+  // Human Review Triggers
+  const triggers = handoffs.filter(h => h.humanTrigger);
+  if (triggers.length > 0) {
+    lines.push(`${colors.red}├─ ⚠ Human Review Needed${' '.repeat(W - 24)}┤${colors.reset}`);
+    triggers.forEach(h => {
+      const reasons = h.triggerReasons.join(', ');
+      const msg = `${h.role}: ${reasons}`;
+      const truncated = msg.length > W - 4 ? msg.slice(0, W - 5) + '…' : msg;
+      const pad = W - 2 - truncated.length;
+      lines.push(`${colors.red}│${colors.reset} ${colors.yellow}${truncated}${' '.repeat(Math.max(0, pad))}${colors.reset} ${colors.red}│${colors.reset}`);
+    });
+  }
+
+  // Recent Log Events
+  const recentLogs = sprintLogs.slice(-3);
+  if (recentLogs.length > 0) {
+    lines.push(`${colors.blue}├─ Recent Events${' '.repeat(W - 16)}┤${colors.reset}`);
+    recentLogs.forEach(log => {
+      const msg = `${log.sprint}: ${log.event} (${log.role})`;
+      const truncated = msg.length > W - 4 ? msg.slice(0, W - 5) + '…' : msg;
+      const pad = W - 2 - truncated.length;
+      lines.push(`${colors.blue}│${colors.reset} ${colors.gray}${truncated}${' '.repeat(Math.max(0, pad))}${colors.reset} ${colors.blue}│${colors.reset}`);
+    });
+  }
+
+  // Footer
+  lines.push(`${colors.blue}└${border}┘${colors.reset}`);
+  lines.push('');
+  lines.push(`${colors.gray}Watching: tasks/, .substrate/handoffs/, spec/, snippets/, atomic/${colors.reset}`);
+  lines.push(`${colors.gray}Ctrl+C to exit${colors.reset}`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Watch command - live dashboard with file watching
+ */
+function watchCommand() {
+  const chokidar = require('chokidar');
+
+  if (!fs.existsSync(path.join(process.cwd(), '.substrate'))) {
+    console.log(`${colors.red}Error:${colors.reset} Substrate not initialized in this directory.`);
+    console.log(`${colors.gray}Run 'stratvibe init' first.${colors.reset}`);
+    process.exit(1);
+  }
+
+  const watchPaths = [
+    path.join(process.cwd(), 'tasks'),
+    path.join(process.cwd(), '.substrate', 'handoffs'),
+    path.join(process.cwd(), '.substrate', 'handoff-*.json'),
+    path.join(process.cwd(), 'spec'),
+    path.join(process.cwd(), 'snippets'),
+    path.join(process.cwd(), 'atomic')
+  ].filter(p => fs.existsSync(p));
+
+  if (watchPaths.length === 0) {
+    console.log(`${colors.yellow}⚠${colors.reset} No watchable directories found.`);
+    console.log(`${colors.gray}Create tasks/ or .substrate/ first.${colors.reset}`);
+    process.exit(1);
+  }
+
+  let debounceTimer = null;
+
+  function render() {
+    const sprints = scanSprints();
+    const handoffs = scanHandoffs();
+    const sprintLogs = scanSprintLogs();
+    const dashboard = renderDashboard(sprints, handoffs, sprintLogs);
+    process.stdout.write('\x1Bc');
+    console.log(dashboard);
+  }
+
+  function onFileChange() {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(render, 300);
+  }
+
+  const watcher = chokidar.watch(watchPaths, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
+    persistent: true
+  });
+
+  watcher.on('ready', () => {
+    render();
+    watcher.on('all', onFileChange);
+  });
+
+  watcher.on('error', (error) => {
+    console.error(`${colors.red}Watcher error:${colors.reset} ${error.message}`);
+  });
+
+  process.on('SIGINT', () => {
+    watcher.close();
+    console.log(`\n${colors.gray}Watch stopped.${colors.reset}`);
+    process.exit(0);
+  });
+}
+
 function helpCommand() {
   console.log(`stratvibe - KISS substrate for LLM agent pipelines
 
@@ -811,6 +1184,7 @@ Usage:
   stratvibe init           # Initialize substrate v0.1 in current directory
   stratvibe validate       # Validate handoff JSON against schema
   stratvibe connect        # Guide to generate AGENTS.md from plan.md
+  stratvibe watch          # Live-refresh dashboard for sprints and handoffs
   stratvibe ignore         # Add .stratvibe/ to .gitignore
   stratvibe eject          # Remove substrate without touching codebase
   stratvibe --help         # Show this help
@@ -851,6 +1225,9 @@ function main() {
   switch (command) {
     case 'connect':
       connectCommand();
+      break;
+    case 'watch':
+      watchCommand();
       break;
     case 'validate':
       validateCommand();
