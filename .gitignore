@@ -75,3 +75,6 @@ temp/
 # Test output
 test-output/
 .stratvibe/
+
+# Experiment scratch space
+experiments/

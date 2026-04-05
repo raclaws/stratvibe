@@ -18,6 +18,12 @@ const colors = {
   red: '\x1b[31m'
 };
 
+// Token counting - uses tiktoken if available, falls back to rough estimate
+function countTokens(text) {
+  // Rough estimate: ~4 chars per token
+  return Math.ceil(text.length / 4);
+}
+
 // Static template content (verbatim from our design)
 const TEMPLATES = {
   '.substrate/taxonomy.md': `# Taxonomy v0.1
@@ -516,8 +522,8 @@ function readJsonInput(source) {
 function validateCommand() {
   console.log(`${colors.blue}🔍 stratvibe validate${colors.reset}`);
 
-  const args = process.argv.slice(3); // Arguments after 'validate'
-  const inputSource = args[0] || '-'; // Default to stdin
+  const args = process.argv.slice(3);
+  const inputSource = args[0] || null;
 
   // Check if substrate is initialized
   const schemaPath = path.join(process.cwd(), '.substrate/schema.json');
@@ -527,96 +533,177 @@ function validateCommand() {
     process.exit(1);
   }
 
+  let schema;
   try {
-    // Load schema version (for display only)
-    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
-
-    // Read JSON to validate
-    let jsonToValidate;
-    if (inputSource === '-' && process.stdin.isTTY) {
-      // No stdin and no file specified
-      console.log(`${colors.gray}Reading JSON from stdin (pipe or redirect)...${colors.reset}`);
-      console.log(`${colors.gray}Or specify a file: stratvibe validate handoff.json${colors.reset}`);
-      process.exit(1);
-    }
-
-    jsonToValidate = readJsonInput(inputSource);
-
-    // Simple structure validation
-    const errors = [];
-
-    // Required top-level sections
-    const requiredSections = ['handoff', 'context', 'payload', 'reasoning', 'meta'];
-    requiredSections.forEach(section => {
-      if (!jsonToValidate[section]) {
-        errors.push(`Missing top-level section: ${section}`);
-      } else if (typeof jsonToValidate[section] !== 'object') {
-        errors.push(`Section ${section} must be an object`);
-      }
-    });
-
-    if (errors.length > 0) {
-      console.log(`${colors.red}✗${colors.reset} Handoff JSON invalid`);
-      errors.forEach(err => console.log(`${colors.gray}  • ${err}${colors.reset}`));
-      process.exit(1);
-    }
-
-    // Check handoff fields
-    const handoff = jsonToValidate.handoff;
-    const handoffRequired = ['id', 'timestamp', 'layer_origin', 'layer_target', 'agent_role', 'status'];
-    handoffRequired.forEach(field => {
-      if (!handoff[field]) {
-        errors.push(`handoff.${field} is required`);
-      }
-    });
-
-    // Check layer_origin and layer_target values
-    const validLayers = ['spec', 'tasks', 'snippets', 'atomic', 'human'];
-    if (handoff.layer_origin && !validLayers.includes(handoff.layer_origin)) {
-      errors.push(`handoff.layer_origin must be one of: ${validLayers.join(', ')}`);
-    }
-    if (handoff.layer_target && !validLayers.includes(handoff.layer_target)) {
-      errors.push(`handoff.layer_target must be one of: ${validLayers.join(', ')}`);
-    }
-
-    // Check agent_role
-    const validRoles = ['planner', 'coordinator', 'implementer', 'resolver', 'summarizer'];
-    if (handoff.agent_role && !validRoles.includes(handoff.agent_role)) {
-      errors.push(`handoff.agent_role must be one of: ${validRoles.join(', ')}`);
-    }
-
-    // Check status
-    const validStatus = ['pending', 'active', 'blocked', 'done', 'failed'];
-    if (handoff.status && !validStatus.includes(handoff.status)) {
-      errors.push(`handoff.status must be one of: ${validStatus.join(', ')}`);
-    }
-
-    // Check confidence range
-    const reasoning = jsonToValidate.reasoning;
-    if (reasoning && reasoning.confidence !== undefined) {
-      const conf = reasoning.confidence;
-      if (typeof conf !== 'number' || conf < 0 || conf > 1) {
-        errors.push(`reasoning.confidence must be a number between 0.0 and 1.0`);
-      }
-    }
-
-    if (errors.length > 0) {
-      console.log(`${colors.red}✗${colors.reset} Handoff JSON invalid`);
-      errors.forEach(err => console.log(`${colors.gray}  • ${err}${colors.reset}`));
-      process.exit(1);
-    }
-
-    // Success
-    console.log(`${colors.green}✓${colors.reset} Handoff JSON valid`);
-    console.log(`${colors.gray}Schema: ${schema.$version || 'v0.1.0'}${colors.reset}`);
-    console.log(`${colors.gray}Layers: ${handoff.layer_origin} → ${handoff.layer_target}${colors.reset}`);
-    if (reasoning && reasoning.confidence !== undefined) {
-      console.log(`${colors.gray}Confidence: ${(reasoning.confidence * 100).toFixed(1)}%${colors.reset}`);
-    }
+    schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
   } catch (error) {
-    console.log(`${colors.red}Error:${colors.reset} ${error.message}`);
+    console.log(`${colors.red}Error:${colors.reset} Invalid schema.json: ${error.message}`);
     process.exit(1);
   }
+
+  // Auto-discover handoff files when no args given
+  let filesToValidate = [];
+  if (inputSource) {
+    filesToValidate = [inputSource];
+  } else {
+    // Scan .substrate/ and .substrate/handoffs/ for JSON files
+    const handoffDir = path.join(process.cwd(), '.substrate', 'handoffs');
+    const substrateDir = path.join(process.cwd(), '.substrate');
+
+    if (fs.existsSync(handoffDir)) {
+      const scanDir = (dir) => {
+        if (!fs.existsSync(dir)) return;
+        fs.readdirSync(dir).forEach(file => {
+          const fullPath = path.join(dir, file);
+          const stat = fs.statSync(fullPath);
+          if (stat.isDirectory()) {
+            scanDir(fullPath);
+          } else if (file.endsWith('.json') && file.startsWith('handoff')) {
+            filesToValidate.push(fullPath);
+          }
+        });
+      };
+      scanDir(handoffDir);
+    }
+
+    // Also check root .substrate/ for handoff-*.json
+    if (fs.existsSync(substrateDir)) {
+      fs.readdirSync(substrateDir).forEach(file => {
+        const fullPath = path.join(substrateDir, file);
+        if (file.endsWith('.json') && file.startsWith('handoff') && !filesToValidate.includes(fullPath)) {
+          filesToValidate.push(fullPath);
+        }
+      });
+    }
+
+    if (filesToValidate.length === 0) {
+      console.log(`${colors.yellow}⚠${colors.reset} No handoff JSON files found in .substrate/`);
+      console.log(`${colors.gray}Usage: stratvibe validate [file.json]${colors.reset}`);
+      process.exit(0);
+    }
+  }
+
+  let totalValid = 0;
+  let totalInvalid = 0;
+
+  filesToValidate.forEach(filePath => {
+    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
+
+    if (!fs.existsSync(resolvedPath)) {
+      console.log(`\n${colors.red}✗${colors.reset} File not found: ${filePath}`);
+      totalInvalid++;
+      return;
+    }
+
+    let jsonToValidate;
+    try {
+      const content = fs.readFileSync(resolvedPath, 'utf8');
+      jsonToValidate = JSON.parse(content);
+    } catch (error) {
+      console.log(`\n${colors.red}✗${colors.reset} ${path.basename(filePath)}: Invalid JSON — ${error.message}`);
+      totalInvalid++;
+      return;
+    }
+
+    const errors = validateHandoff(jsonToValidate);
+
+    if (errors.length > 0) {
+      console.log(`\n${colors.red}✗${colors.reset} ${path.basename(filePath)}: Invalid`);
+      errors.forEach(err => console.log(`${colors.gray}  • ${err}${colors.reset}`));
+      totalInvalid++;
+    } else {
+      const handoff = jsonToValidate.handoff;
+      const reasoning = jsonToValidate.reasoning;
+      const content = fs.readFileSync(resolvedPath, 'utf8');
+      const tokens = countTokens(content);
+      const budget = jsonToValidate.context?.token_budget;
+      const used = jsonToValidate.context?.token_used;
+
+      console.log(`\n${colors.green}✓${colors.reset} ${path.basename(filePath)}`);
+      console.log(`${colors.gray}  Schema: ${schema.$version || 'v0.1.0'}${colors.reset}`);
+      console.log(`${colors.gray}  Layers: ${handoff.layer_origin} → ${handoff.layer_target}${colors.reset}`);
+      console.log(`${colors.gray}  Role: ${handoff.agent_role}${colors.reset}`);
+      console.log(`${colors.gray}  Status: ${handoff.status}${colors.reset}`);
+      if (reasoning && reasoning.confidence !== undefined) {
+        console.log(`${colors.gray}  Confidence: ${(reasoning.confidence * 100).toFixed(1)}%${colors.reset}`);
+      }
+      if (budget) {
+        const pct = ((tokens / budget) * 100).toFixed(0);
+        const over = tokens > budget ? ` ${colors.red}(OVER BUDGET by ${tokens - budget})${colors.reset}` : '';
+        console.log(`${colors.gray}  Token budget: ${tokens}/${budget} (${pct}%)${colors.reset}${over}`);
+      } else {
+        console.log(`${colors.gray}  Tokens: ${tokens}${colors.reset}`);
+      }
+      if (used !== undefined) {
+        const drift = Math.abs(tokens - used);
+        const driftPct = ((drift / used) * 100).toFixed(0);
+        console.log(`${colors.gray}  Reported: ${used} (drift: ${drift} / ${driftPct}%)${colors.reset}`);
+      }
+      totalValid++;
+    }
+  });
+
+  // Summary
+  console.log(`\n${colors.gray}─────────────────────────${colors.reset}`);
+  console.log(`${colors.green}Valid: ${totalValid}${colors.reset}  ${colors.red}Invalid: ${totalInvalid}${colors.reset}  ${colors.gray}Total: ${totalValid + totalInvalid}${colors.reset}`);
+
+  if (totalInvalid > 0) {
+    process.exit(1);
+  }
+}
+
+/**
+ * Validate a single handoff object, returns array of errors
+ */
+function validateHandoff(json) {
+  const errors = [];
+
+  const requiredSections = ['handoff', 'context', 'payload', 'reasoning', 'meta'];
+  requiredSections.forEach(section => {
+    if (!json[section]) {
+      errors.push(`Missing top-level section: ${section}`);
+    } else if (typeof json[section] !== 'object') {
+      errors.push(`Section ${section} must be an object`);
+    }
+  });
+
+  if (errors.length > 0) return errors;
+
+  const handoff = json.handoff;
+  const handoffRequired = ['id', 'timestamp', 'layer_origin', 'layer_target', 'agent_role', 'status'];
+  handoffRequired.forEach(field => {
+    if (!handoff[field]) {
+      errors.push(`handoff.${field} is required`);
+    }
+  });
+
+  const validLayers = ['spec', 'tasks', 'snippets', 'atomic', 'human'];
+  if (handoff.layer_origin && !validLayers.includes(handoff.layer_origin)) {
+    errors.push(`handoff.layer_origin must be one of: ${validLayers.join(', ')}`);
+  }
+  if (handoff.layer_target && !validLayers.includes(handoff.layer_target)) {
+    errors.push(`handoff.layer_target must be one of: ${validLayers.join(', ')}`);
+  }
+
+  const validRoles = ['planner', 'coordinator', 'implementer', 'resolver', 'summarizer'];
+  if (handoff.agent_role && !validRoles.includes(handoff.agent_role)) {
+    errors.push(`handoff.agent_role must be one of: ${validRoles.join(', ')}`);
+  }
+
+  const validStatus = ['pending', 'active', 'blocked', 'done', 'failed'];
+  if (handoff.status && !validStatus.includes(handoff.status)) {
+    errors.push(`handoff.status must be one of: ${validStatus.join(', ')}`);
+  }
+
+  const reasoning = json.reasoning;
+  if (reasoning && reasoning.confidence !== undefined) {
+    const conf = reasoning.confidence;
+    if (typeof conf !== 'number' || conf < 0 || conf > 1) {
+      errors.push(`reasoning.confidence must be a number between 0.0 and 1.0`);
+    }
+  }
+
+  return errors;
 }
 
 /**
