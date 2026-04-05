@@ -3,6 +3,8 @@
 > KISS substrate for LLM agent pipelines.
 > One command. One job. No questions asked.
 
+> **This is a vibecoding project.** Built fast, iterated with AI, structured for real use.
+
 **stratvibe** is a project‑agnostic cognitive substrate for LLM agent pipelines.  
 Structure is stable. Semantics are project‑specific. Process is explicit.
 
@@ -111,20 +113,30 @@ stratvibe init
 stratvibe init --help
 ```
 
-### `stratvibe validate` (coming soon)
-Validates handoff JSON against schema.
+### `stratvibe validate`
+Validates handoff JSON against schema. Auto-discovers handoffs if no file specified.
 
 ```bash
 stratvibe validate handoff.json
-echo '{"handoff": {...}}' | stratvibe validate
+stratvibe validate
 ```
 
-### Planned commands
-- `stratvibe planner` – Planner role interface
-- `stratvibe coordinator` – Coordinator role interface  
-- `stratvibe implementer` – Implementer role interface
-- `stratvibe status` – Project health check
-- `stratvibe review` – Human review interface
+### `stratvibe watch`
+Live-refresh dashboard for sprint status and handoff health.
+
+```bash
+stratvibe watch
+```
+
+### Other commands
+- `stratvibe connect` — Guide to generate AGENTS.md from plan.md
+- `stratvibe ignore` — Add .stratvibe/ to .gitignore
+- `stratvibe eject` — Remove substrate without touching codebase
+
+### Planned
+- `stratvibe run` — Execute agent chain
+- `stratvibe sync` — Promote workspace outputs to repo
+- Model escalation logic
 
 ## 🧠 Why Substrate?
 
