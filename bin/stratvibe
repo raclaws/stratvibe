@@ -1,0 +1,8 @@
+#!/usr/bin/env node
+
+/**
+ * stratvibe CLI entry point
+ * KISS: Just pass through to main module
+ */
+
+require('../src/cli.js');
