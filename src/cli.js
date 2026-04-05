@@ -748,8 +748,13 @@ function versionCommand() {
 function main() {
   const args = process.argv.slice(2);
 
-  // No arguments or "init" command
-  if (args.length === 0 || args[0] === 'init') {
+  // No arguments shows help, "init" runs init
+  if (args.length === 0) {
+    helpCommand();
+    return;
+  }
+
+  if (args[0] === 'init') {
     initCommand();
     return;
   }
