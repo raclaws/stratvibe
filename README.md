@@ -46,7 +46,7 @@ Built on **Substrate v0.1** — a formal protocol for human‑AI collaboration w
 
 ### Installation
 ```bash
-npm install -g stratvibe
+npm i stratvibe
 ```
 
 ### Initialize a project
