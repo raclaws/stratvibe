@@ -1,5 +1,10 @@
 # stratvibe
 
+[![npm version](https://img.shields.io/npm/v/stratvibe.svg)](https://www.npmjs.com/package/stratvibe)
+[![npm downloads](https://img.shields.io/npm/dm/stratvibe.svg)](https://www.npmjs.com/package/stratvibe)
+[![npm downloads total](https://img.shields.io/npm/dt/stratvibe.svg)](https://www.npmjs.com/package/stratvibe)
+[![license](https://img.shields.io/npm/l/stratvibe.svg)](https://github.com/raclaws/stratvibe/blob/main/LICENSE)
+
 > KISS substrate for LLM agent pipelines.
 > One command. One job. No questions asked.
 

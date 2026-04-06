@@ -637,7 +637,7 @@ function validateCommand() {
     const errors = validateHandoff(jsonToValidate);
 
     if (errors.length > 0) {
-      console.log(`\n${colors.red}✗${colors.reset} ${path.basename(filePath)}: Invalid`);
+      console.log(`\n${colors.red}✗${colors.reset} ${path.basename(filePath)}: Handoff JSON invalid`);
       errors.forEach(err => console.log(`${colors.gray}  • ${err}${colors.reset}`));
       totalInvalid++;
     } else {
@@ -648,7 +648,7 @@ function validateCommand() {
       const budget = jsonToValidate.context?.token_budget;
       const used = jsonToValidate.context?.token_used;
 
-      console.log(`\n${colors.green}✓${colors.reset} ${path.basename(filePath)}`);
+      console.log(`\n${colors.green}✓${colors.reset} ${path.basename(filePath)}: Handoff JSON valid`);
       console.log(`${colors.gray}  Schema: ${schema.$version || 'v0.1.0'}${colors.reset}`);
       console.log(`${colors.gray}  Layers: ${handoff.layer_origin} → ${handoff.layer_target}${colors.reset}`);
       console.log(`${colors.gray}  Role: ${handoff.agent_role}${colors.reset}`);
