@@ -126,19 +126,13 @@ stratvibe validate handoff.json
 stratvibe validate
 ```
 
-### `stratvibe watch`
-Live-refresh dashboard for sprint status and handoff health.
-
-```bash
-stratvibe watch
-```
-
 ### Other commands
 - `stratvibe connect` — Guide to generate AGENTS.md from plan.md
 - `stratvibe ignore` — Add .stratvibe/ to .gitignore
 - `stratvibe eject` — Remove substrate without touching codebase
 
-### Planned
+### Planned / In Progress
+- `stratvibe watch` — Live-refresh dashboard for sprint status and handoff health
 - `stratvibe run` — Execute agent chain
 - `stratvibe sync` — Promote workspace outputs to repo
 - Model escalation logic
