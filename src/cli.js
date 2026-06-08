@@ -425,7 +425,10 @@ function writeIfNotExists(filePath, content) {
  * Initialize substrate v0.1
  */
 function initCommand() {
-  console.log(`${colors.blue}🎯 stratvibe init${colors.reset}`);
+  const args = process.argv.slice(3);
+  const deep = args.includes('--deep');
+
+  console.log(`${colors.blue}stratvibe init${colors.reset}`);
   console.log(`${colors.gray}One command. One job. No questions asked.${colors.reset}\n`);
 
   let createdCount = 0;
@@ -485,8 +488,8 @@ function initCommand() {
   });
 
   // Summary
-  console.log(`\n${colors.green}Substrate v0.1 ready.${colors.reset}`);
-    // Copy plan.template.md -> plan.md
+  console.log(`\n${colors.green}Substrate v0.2 ready.${colors.reset}`);
+  // Copy plan.template.md -> plan.md
   const planSrc = path.join(__dirname, '..', 'plan.template.md');
   const planDest = path.join(process.cwd(), 'plan.md');
   if (!fs.existsSync(planDest)) {
@@ -494,24 +497,68 @@ function initCommand() {
     if (templateExists) {
       fs.copyFileSync(planSrc, planDest);
     } else {
-      // Fallback: write minimal plan inline
       fs.writeFileSync(planDest, '# [Project Name] — Technical Plan\n\n');
     }
     console.log(`${colors.green}✓${colors.reset} Written plan.md`);
     createdCount++;
   }
 
-console.log(`${colors.gray}Created: ${createdCount} items, Skipped: ${skippedCount} existing${colors.reset}`);
+  console.log(`${colors.gray}Created: ${createdCount} items, Skipped: ${skippedCount} existing${colors.reset}`);
 
   if (skippedCount > 0) {
     console.log(`\n${colors.yellow}Note: Some files/directories already existed.${colors.reset}`);
-    console.log(`${colors.yellow}Use --force to overwrite (not implemented yet).${colors.reset}`);
   }
 
+  // Inference phase
+  const { isAvailable } = require('./llm');
+
+  if (deep) {
+    console.log(`\n${colors.blue}[--deep] Running genealogy first...${colors.reset}`);
+    try {
+      genealogyCommand();
+    } catch (e) {
+      console.log(`${colors.yellow}⚠${colors.reset} Genealogy failed: ${e.message}. Continuing with init.`);
+    }
+  }
+
+  if (isAvailable()) {
+    console.log(`\n${colors.blue}LLM detected.${colors.reset} Running inference-powered init...`);
+    const { runInitInference, writeDraftLayers } = require('./init-inference');
+
+    runInitInference(process.cwd()).then(result => {
+      if (!result.success) {
+        console.log(`${colors.yellow}⚠${colors.reset} Inference skipped: ${result.error}`);
+        printNextSteps();
+        return;
+      }
+
+      const written = writeDraftLayers(process.cwd(), result.layers);
+      console.log(`${colors.green}✓${colors.reset} Draft layers written:`);
+      written.forEach(f => console.log(`${colors.gray}    ${f}${colors.reset}`));
+
+      if (result.meta.dropped_fields.length > 0) {
+        console.log(`${colors.yellow}Dropped:${colors.reset}`);
+        result.meta.dropped_fields.forEach(d => console.log(`${colors.gray}  • ${d}${colors.reset}`));
+      }
+
+      console.log(`${colors.gray}  Confidence: ${(result.meta.confidence * 100).toFixed(0)}%${colors.reset}`);
+      console.log(`${colors.gray}  Model: ${result.meta.model}${colors.reset}`);
+      console.log(`\n${colors.green}Draft substrate ready.${colors.reset} Review draft-init.md files, then run ${colors.blue}stratvibe validate${colors.reset}`);
+    }).catch(err => {
+      console.log(`${colors.red}Inference failed:${colors.reset} ${err.message}`);
+      printNextSteps();
+    });
+  } else {
+    printNextSteps();
+  }
+}
+
+function printNextSteps() {
   console.log(`\n${colors.blue}Next:${colors.reset}`);
   console.log(`${colors.gray}  • Fill plan.md with your project intent${colors.reset}`);
   console.log(`${colors.gray}  • Run stratvibe connect to generate AGENTS.md${colors.reset}`);
   console.log(`${colors.gray}  • Start with spec/ architecture decisions${colors.reset}`);
+  console.log(`${colors.gray}  • Set STRATVIBE_LLM_URL for inference-powered init${colors.reset}`);
 }
 
 /**
@@ -1177,12 +1224,426 @@ function watchCommand() {
   });
 }
 
+function genealogyCommand() {
+  function parseArgs(argv) {
+    const args = {};
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === '--target' && argv[i + 1]) {
+        args.target = path.resolve(argv[i + 1]);
+        i++;
+      } else if (argv[i] === '--no-runtime') {
+        args.noRuntime = true;
+      } else if (argv[i] === '--dry') {
+        args.dry = true;
+      } else if (argv[i] === '--help' || argv[i] === '-h') {
+        args.help = true;
+      }
+    }
+    return args;
+  }
+
+  function printDryRun(targetDir) {
+    console.log(`${colors.blue}stratvibe genealogy — dry run${colors.reset}`);
+    console.log(`${colors.gray}Target: ${targetDir}${colors.reset}\n`);
+
+    if (!fs.existsSync(targetDir)) {
+      console.log(`${colors.red}Error: Target directory does not exist.${colors.reset}`);
+      process.exit(1);
+    }
+
+    const readmeExists = fs.existsSync(path.join(targetDir, 'README.md')) ||
+                         fs.existsSync(path.join(targetDir, 'README'));
+    const docsExist = fs.existsSync(path.join(targetDir, 'docs'));
+    const pkgExists = fs.existsSync(path.join(targetDir, 'package.json'));
+    const envExists = fs.existsSync(path.join(targetDir, '.env'));
+
+    console.log(`${colors.blue}Archivist would scan:${colors.reset}`);
+    console.log(`  ${readmeExists ? colors.green : colors.yellow}${readmeExists ? '✓' : '✗'} README${colors.reset}`);
+    console.log(`  ${docsExist ? colors.green : colors.yellow}${docsExist ? '✓' : '✗'} docs/ directory${colors.reset}`);
+    console.log(`  ${colors.gray}? Source code comments${colors.reset}`);
+    console.log(`  ${colors.gray}? Git history${colors.reset}`);
+
+    console.log(`\n${colors.blue}Cartographer would scan:${colors.reset}`);
+    console.log(`  ${pkgExists ? colors.green : colors.yellow}${pkgExists ? '✓' : '✗'} package.json${colors.reset}`);
+    console.log(`  ${colors.gray}? File tree and structure${colors.reset}`);
+    console.log(`  ${colors.gray}? Import/require graph${colors.reset}`);
+
+    console.log(`\n${colors.blue}Inspector would scan:${colors.reset}`);
+    console.log(`  ${envExists ? colors.green : colors.yellow}${envExists ? '✓' : '✗'} .env file${colors.reset}`);
+    console.log(`  ${colors.gray}? Config files (*.config.js, *.json)${colors.reset}`);
+    console.log(`  ${colors.gray}? package.json scripts${colors.reset}`);
+
+    console.log(`\n${colors.blue}Genealogist would produce:${colors.reset}`);
+    console.log(`  lineage.md — ancestry, mutations, orphans, fossils`);
+    console.log(`  delta-report.md — human review document`);
+
+    console.log(`\n${colors.gray}Run without --dry to execute.${colors.reset}`);
+  }
+
+  const args = parseArgs(process.argv.slice(2));
+
+  if (args.help) {
+    console.log(`stratvibe genealogy — Legacy code analysis
+
+Usage:
+  stratvibe genealogy [--target <path>] [--no-runtime] [--dry]
+
+Flags:
+  --target <path>    Directory to analyze (default: current directory)
+  --no-runtime       Skip Inspector role (static analysis only)
+  --dry              Show what would be analyzed, don't run
+  --help, -h         Show this help
+
+Output:
+  Creates genealogy/ directory in the target project root with:
+  - stated-intent.md       (Archivist output)
+  - actual-implementation.md (Cartographer output)
+  - actual-behavior.md     (Inspector output)
+  - lineage.md             (Genealogist synthesis)
+  - delta-report.md        (Human review document)`);
+    return;
+  }
+
+  const targetDir = args.target || process.cwd();
+  const outputDir = path.join(targetDir, 'genealogy');
+
+  if (args.dry) {
+    printDryRun(targetDir);
+    return;
+  }
+
+  if (!fs.existsSync(targetDir)) {
+    console.log(`${colors.red}Error:${colors.reset} Target directory does not exist: ${targetDir}`);
+    process.exit(1);
+  }
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  console.log(`${colors.blue}┌─ stratvibe genealogy${colors.reset}`);
+  console.log(`${colors.blue}│${colors.reset} ${colors.gray}Target: ${targetDir}${colors.reset}`);
+  console.log(`${colors.blue}│${colors.reset} ${colors.gray}Output: ${outputDir}${colors.reset}`);
+  console.log(`${colors.blue}└${'─'.repeat(40)}${colors.reset}\n`);
+
+  try {
+    const archivist = require('./genealogy/archivist');
+    const cartographer = require('./genealogy/cartographer');
+    const inspector = require('./genealogy/inspector');
+    const genealogist = require('./genealogy/genealogist');
+
+    // Phase 1: Archivist
+    console.log(`${colors.blue}[1/4] Archivist${colors.reset} — scanning documentation...`);
+    const archivistResult = archivist.run(targetDir, path.join(outputDir, 'stated-intent.md'));
+    console.log(`${colors.green}  ✓${colors.reset} stated-intent.md written`);
+    console.log(`${colors.gray}    Sources: ${archivistResult.sourcesFound}${colors.reset}`);
+    console.log(`${colors.gray}    README: ${archivistResult.hasReadme ? 'found' : 'not found'}${colors.reset}`);
+    console.log(`${colors.gray}    Docs: ${archivistResult.hasDocDirs ? 'found' : 'not found'}${colors.reset}`);
+    console.log(`${colors.gray}    Comments: ${archivistResult.hasComments ? 'found' : 'not found'}${colors.reset}\n`);
+
+    // Phase 2: Cartographer
+    console.log(`${colors.blue}[2/4] Cartographer${colors.reset} — mapping codebase...`);
+    const cartographerResult = cartographer.run(targetDir, path.join(outputDir, 'actual-implementation.md'));
+    console.log(`${colors.green}  ✓${colors.reset} actual-implementation.md written`);
+    console.log(`${colors.gray}    Files: ${cartographerResult.totalFiles} (${cartographerResult.codeFiles} code)${colors.reset}`);
+    console.log(`${colors.gray}    Fossils: ${cartographerResult.fossils}${colors.reset}`);
+    console.log(`${colors.gray}    Orphans: ${cartographerResult.orphans}${colors.reset}`);
+    console.log(`${colors.gray}    Patterns: ${cartographerResult.patterns}${colors.reset}\n`);
+
+    // Phase 3: Inspector
+    if (args.noRuntime) {
+      console.log(`${colors.yellow}[3/4] Inspector${colors.reset} — skipped (--no-runtime)\n`);
+    } else {
+      console.log(`${colors.blue}[3/4] Inspector${colors.reset} — scanning config...`);
+      const inspectorResult = inspector.run(targetDir, path.join(outputDir, 'actual-behavior.md'));
+      console.log(`${colors.green}  ✓${colors.reset} actual-behavior.md written`);
+      console.log(`${colors.gray}    Config files: ${inspectorResult.configFilesFound}${colors.reset}`);
+      console.log(`${colors.gray}    Entries: ${inspectorResult.configEntries}${colors.reset}`);
+      console.log(`${colors.gray}    Undocumented: ${inspectorResult.undocumentedConfigs}${colors.reset}\n`);
+    }
+
+    // Phase 4: Genealogist
+    console.log(`${colors.blue}[4/4] Genealogist${colors.reset} — synthesizing...`);
+    const genealogistResult = genealogist.run(
+      targetDir,
+      outputDir,
+      path.join(outputDir, 'stated-intent.md'),
+      path.join(outputDir, 'actual-implementation.md'),
+      path.join(outputDir, 'actual-behavior.md')
+    );
+    console.log(`${colors.green}  ✓${colors.reset} lineage.md written`);
+    console.log(`${colors.green}  ✓${colors.reset} delta-report.md written\n`);
+
+    // Summary
+    console.log(`${colors.blue}┌─ Summary${colors.reset}`);
+    console.log(`${colors.blue}│${colors.reset}`);
+    console.log(`${colors.blue}│${colors.reset} ${colors.green}Genealogy complete.${colors.reset}`);
+    console.log(`${colors.blue}│${colors.reset}`);
+    console.log(`${colors.blue}│${colors.reset} ${colors.gray}Output files:${colors.reset}`);
+    console.log(`${colors.blue}│${colors.reset}   genealogy/stated-intent.md`);
+    console.log(`${colors.blue}│${colors.reset}   genealogy/actual-implementation.md`);
+    console.log(`${colors.blue}│${colors.reset}   genealogy/actual-behavior.md`);
+    console.log(`${colors.blue}│${colors.reset}   genealogy/lineage.md`);
+    console.log(`${colors.blue}│${colors.reset}   genealogy/delta-report.md ${colors.yellow}← start here${colors.reset}`);
+    console.log(`${colors.blue}│${colors.reset}`);
+    console.log(`${colors.blue}│${colors.reset} ${colors.gray}Next: Review delta-report.md and resolve flagged items.${colors.reset}`);
+    console.log(`${colors.blue}└${'─'.repeat(40)}${colors.reset}`);
+  } catch (error) {
+    console.error(`${colors.red}Error:${colors.reset} ${error.message}`);
+    console.error(`${colors.gray}${error.stack}${colors.reset}`);
+    process.exit(1);
+  }
+}
+
+function handoffCommand() {
+  const args = process.argv.slice(3);
+  let fromLayer = null, toLayer = null, role = null, file = null, status = 'pending';
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from' && args[i + 1]) { fromLayer = args[++i]; }
+    else if (args[i] === '--to' && args[i + 1]) { toLayer = args[++i]; }
+    else if (args[i] === '--role' && args[i + 1]) { role = args[++i]; }
+    else if (args[i] === '--file' && args[i + 1]) { file = args[++i]; }
+    else if (args[i] === '--status' && args[i + 1]) { status = args[++i]; }
+    else if (args[i] === '--help' || args[i] === '-h') {
+      console.log(`stratvibe handoff — produce a protocol-compliant handoff
+
+Usage:
+  echo '{"decision":"..."}' | stratvibe handoff --from spec --to tasks --role planner
+  stratvibe handoff --file output.json --from spec --to tasks --role planner
+
+Flags:
+  --from <layer>    Origin layer (spec|tasks|snippets|atomic)
+  --to <layer>      Target layer (spec|tasks|snippets|atomic|human)
+  --role <role>     Agent role (planner|coordinator|implementer|resolver|summarizer)
+  --file <path>     Read content from file instead of stdin
+  --status <s>      Status (default: pending)`);
+      return;
+    }
+  }
+
+  if (!fromLayer || !toLayer || !role) {
+    console.log(`${colors.red}Error:${colors.reset} --from, --to, and --role are required.`);
+    console.log(`${colors.gray}Use 'stratvibe handoff --help' for usage.${colors.reset}`);
+    process.exit(1);
+  }
+
+  const { produceHandoff, writeHandoff } = require('./handoff-producer');
+
+  const run = async (content) => {
+    try {
+      const handoff = await produceHandoff({ content, fromLayer, toLayer, role, status });
+      const filePath = writeHandoff(handoff);
+      console.log(`${colors.green}✓${colors.reset} Handoff written: ${path.relative(process.cwd(), filePath)}`);
+      console.log(`${colors.gray}  ${fromLayer} → ${toLayer} (${role})${colors.reset}`);
+      console.log(`${colors.gray}  Tokens: ${handoff.context.token_used}/${handoff.context.token_budget}${colors.reset}`);
+      if (handoff.context.compression_applied) {
+        console.log(`${colors.yellow}  Compression applied${colors.reset}`);
+      }
+      if (handoff.meta.dropped_fields && handoff.meta.dropped_fields.length > 0) {
+        console.log(`${colors.yellow}  Dropped:${colors.reset}`);
+        handoff.meta.dropped_fields.forEach(d => console.log(`${colors.gray}    • ${d}${colors.reset}`));
+      }
+    } catch (err) {
+      console.error(`${colors.red}Error:${colors.reset} ${err.message}`);
+      process.exit(1);
+    }
+  };
+
+  if (file) {
+    const filePath = path.isAbsolute(file) ? file : path.join(process.cwd(), file);
+    try {
+      const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      run(content);
+    } catch (err) {
+      console.error(`${colors.red}Error:${colors.reset} Failed to read file: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => data += chunk);
+    process.stdin.on('end', () => {
+      try {
+        const content = JSON.parse(data);
+        run(content);
+      } catch (err) {
+        console.error(`${colors.red}Error:${colors.reset} Invalid JSON from stdin: ${err.message}`);
+        process.exit(1);
+      }
+    });
+  }
+}
+
+function summarizeCommand() {
+  const args = process.argv.slice(3);
+  let fromLayer = null, toLayer = null;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from' && args[i + 1]) { fromLayer = args[++i]; }
+    else if (args[i] === '--to' && args[i + 1]) { toLayer = args[++i]; }
+    else if (args[i] === '--help' || args[i] === '-h') {
+      console.log(`stratvibe summarize — compress content between layers
+
+Usage:
+  echo '{"decision":"...","rationale":"..."}' | stratvibe summarize --from spec --to tasks
+
+Flags:
+  --from <layer>    Source layer
+  --to <layer>      Target layer (determines budget)
+
+Requires STRATVIBE_LLM_URL to be set.`);
+      return;
+    }
+  }
+
+  if (!fromLayer || !toLayer) {
+    console.log(`${colors.red}Error:${colors.reset} --from and --to are required.`);
+    process.exit(1);
+  }
+
+  const { isAvailable } = require('./llm');
+  if (!isAvailable()) {
+    console.log(`${colors.red}Error:${colors.reset} STRATVIBE_LLM_URL not set. Summarizer requires LLM access.`);
+    process.exit(1);
+  }
+
+  const { summarize } = require('./summarizer');
+  const { countTokens, getBudget } = require('./tokens');
+
+  let data = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => data += chunk);
+  process.stdin.on('end', async () => {
+    try {
+      const content = JSON.parse(data);
+      const inputTokens = countTokens(JSON.stringify(content));
+      const targetBudget = getBudget(toLayer);
+
+      console.log(`${colors.blue}Summarizing${colors.reset} ${fromLayer} → ${toLayer}`);
+      console.log(`${colors.gray}Input: ${inputTokens} tokens | Target: ${targetBudget} tokens${colors.reset}`);
+
+      const result = await summarize(content, fromLayer, toLayer);
+
+      console.log(`${colors.green}✓${colors.reset} Compressed: ${result.meta.output_tokens} tokens`);
+
+      if (result.dropped_fields.length > 0) {
+        console.log(`${colors.yellow}Dropped:${colors.reset}`);
+        result.dropped_fields.forEach(d => console.log(`${colors.gray}  • ${d}${colors.reset}`));
+      }
+
+      console.log(`\n${colors.gray}--- Output ---${colors.reset}`);
+      console.log(JSON.stringify(result.compressed, null, 2));
+    } catch (err) {
+      console.error(`${colors.red}Error:${colors.reset} ${err.message}`);
+      process.exit(1);
+    }
+  });
+}
+
+function feedCommand() {
+  const args = process.argv.slice(3);
+  let layer = null, role = null;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--layer' && args[i + 1]) { layer = args[++i]; }
+    else if (args[i] === '--role' && args[i + 1]) { role = args[++i]; }
+    else if (args[i] === '--help' || args[i] === '-h') {
+      console.log(`stratvibe feed — produce context for an agent at a given layer
+
+Usage:
+  stratvibe feed --layer tasks --role coordinator
+
+Flags:
+  --layer <layer>   Target layer (spec|tasks|snippets|atomic)
+  --role <role>     Agent role to feed context to
+
+Outputs JSON context blob to stdout.`);
+      return;
+    }
+  }
+
+  if (!layer) {
+    console.log(`${colors.red}Error:${colors.reset} --layer is required.`);
+    process.exit(1);
+  }
+
+  const { countTokens, getBudget } = require('./tokens');
+  const budget = getBudget(layer);
+
+  // Find latest handoff targeting this layer
+  const handoffDir = path.join(process.cwd(), '.substrate', 'handoffs');
+  let latestHandoff = null;
+
+  if (fs.existsSync(handoffDir)) {
+    const files = fs.readdirSync(handoffDir)
+      .filter(f => f.endsWith('.json') && f.includes(`-${layer}-`))
+      .sort()
+      .reverse();
+
+    if (files.length > 0) {
+      try {
+        latestHandoff = JSON.parse(fs.readFileSync(path.join(handoffDir, files[0]), 'utf8'));
+      } catch {}
+    }
+  }
+
+  // Read layer's current state
+  const layerDir = path.join(process.cwd(), layer);
+  let layerFiles = {};
+  if (fs.existsSync(layerDir)) {
+    const scan = (dir, prefix = '') => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const rel = path.join(prefix, entry.name);
+        if (entry.isDirectory()) {
+          scan(path.join(dir, entry.name), rel);
+        } else if (entry.name.endsWith('.md') || entry.name.endsWith('.json')) {
+          const content = fs.readFileSync(path.join(dir, entry.name), 'utf8');
+          layerFiles[rel] = content;
+        }
+      }
+    };
+    scan(layerDir);
+  }
+
+  const context = {
+    layer,
+    role: role || null,
+    token_budget: budget,
+    latest_handoff: latestHandoff ? latestHandoff.payload?.content : null,
+    handoff_meta: latestHandoff ? {
+      from: latestHandoff.handoff?.layer_origin,
+      role: latestHandoff.handoff?.agent_role,
+      status: latestHandoff.handoff?.status,
+      confidence: latestHandoff.reasoning?.confidence,
+      flags: latestHandoff.reasoning?.flags,
+    } : null,
+    layer_state: layerFiles,
+  };
+
+  const contextStr = JSON.stringify(context);
+  const tokens = countTokens(contextStr);
+
+  if (tokens > budget) {
+    context._warning = `Context (${tokens} tokens) exceeds layer budget (${budget}). Consider running stratvibe summarize.`;
+  }
+
+  context._tokens = tokens;
+  console.log(JSON.stringify(context, null, 2));
+}
+
 function helpCommand() {
   console.log(`stratvibe - KISS substrate for LLM agent pipelines
 
 Usage:
-  stratvibe init           # Initialize substrate v0.1 in current directory
+  stratvibe init           # Initialize substrate (with LLM inference if configured)
+  stratvibe init --deep    # Run genealogy first, then inference-powered init
+  stratvibe handoff        # Produce a protocol-compliant handoff JSON
+  stratvibe summarize      # Compress content between layers (requires LLM)
+  stratvibe feed           # Output context blob for an agent at a layer
   stratvibe validate       # Validate handoff JSON against schema
+  stratvibe genealogy      # Run legacy code analysis
   stratvibe connect        # Guide to generate AGENTS.md from plan.md
   stratvibe watch          # Live-refresh dashboard for sprints and handoffs
   stratvibe ignore         # Add .stratvibe/ to .gitignore
@@ -1190,9 +1651,12 @@ Usage:
   stratvibe --help         # Show this help
   stratvibe --version      # Show version
 
-No flags, no prompts, no config.
-Just like git init.
+Environment:
+  STRATVIBE_LLM_URL        OpenAI-compatible endpoint (enables inference)
+  STRATVIBE_LLM_KEY        API key for the endpoint
+  STRATVIBE_LLM_MODEL      Model identifier (default: anthropic/claude-sonnet-4-20250514)
 
+No config files. Env vars only.
 Created by R & GIaL - 2026`);
 }
 
@@ -1200,7 +1664,7 @@ Created by R & GIaL - 2026`);
  * Show version
  */
 function versionCommand() {
-  console.log('stratvibe v0.1.0 (substrate v0.1)');
+  console.log('stratvibe v0.2.0 (substrate v0.2)');
 }
 
 /**
@@ -1232,11 +1696,23 @@ function main() {
     case 'validate':
       validateCommand();
       break;
+    case 'handoff':
+      handoffCommand();
+      break;
+    case 'summarize':
+      summarizeCommand();
+      break;
+    case 'feed':
+      feedCommand();
+      break;
     case 'ignore':
       ignoreCommand();
       break;
     case 'eject':
       ejectCommand();
+      break;
+    case 'genealogy':
+      genealogyCommand();
       break;
     case '--help':
     case '-h':
